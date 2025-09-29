@@ -1,5 +1,3 @@
-// server.js - كود الخادم الخلفي لإدارة التحكم الفوري في اللعبة
-
 const express = require('express');
 const http = require('http');
 const { Server } = require("socket.io");
