@@ -1,78 +1,97 @@
-const WebSocket = require('ws');
+// server.js
 
-// Set the port.
-const PORT = 8080;
+const express = require('express');
+const http = require('http');
+const { Server } = require("socket.io");
+const cors = require('cors');
 
-const wss = new WebSocket.Server({ port: PORT });
+const app = express();
+const server = http.createServer(app); 
 
-let hostConnection = null;
+// ⚠️ يجب تغيير هذا الرابط إلى رابط لعبتك النهائي على Vercel:
+// https://naruto-card-game-od2enrwm9-tobiok090s-projects.vercel.app
+const CLIENT_ORIGIN = 'https://naruto-card-game-od2enrwm9-tobiok090s-projects.vercel.app'; 
 
-console.log(`WebSocket server started on port ${PORT}`);
+// إعداد CORS للسماح للعبتك بالتواصل مع الخادم
+app.use(cors({
+    origin: CLIENT_ORIGIN,
+    methods: ["GET", "POST"]
+}));
+app.use(express.json());
 
-wss.on('connection', ws => {
-  console.log('Client connected');
 
-  ws.on('message', message => {
-    let data;
-    try {
-      data = JSON.parse(message);
-      console.log('Received:', data);
-    } catch (e) {
-      console.error('Failed to parse message:', message);
-      return;
+// =================================================================
+// إعداد Socket.IO
+// =================================================================
+const io = new Server(server, {
+    cors: {
+        origin: CLIENT_ORIGIN,
+        methods: ["GET", "POST"]
     }
-
-    if (data.type === 'register_player') {
-      ws.isPlayer = true;
-      ws.playerName = data.name;
-      console.log(`Player ${ws.playerName} registered`);
-      if (hostConnection) {
-        hostConnection.send(JSON.stringify({
-          type: 'player_connected',
-          name: ws.playerName
-        }));
-      }
-    } else if (data.type === 'register_host') {
-      hostConnection = ws;
-      ws.isHost = true;
-      console.log('Host screen registered');
-    } else if (data.type === 'use_ability') {
-      if (hostConnection && hostConnection.readyState === WebSocket.OPEN) {
-        hostConnection.send(JSON.stringify({
-          type: 'ability_request',
-          playerName: data.playerName,
-          ability: data.ability,
-          timestamp: new Date().toISOString()
-        }));
-        ws.send(JSON.stringify({
-          type: 'request_sent',
-          status: 'success'
-        }));
-      } else {
-        ws.send(JSON.stringify({
-          type: 'request_sent',
-          status: 'error',
-          message: 'Host not connected. Cannot send request.'
-        }));
-      }
-    }
-  });
-
-  ws.on('close', () => {
-    if (ws.isHost) {
-      console.log('Host disconnected');
-      hostConnection = null;
-    } else if (ws.isPlayer) {
-      console.log(`Player ${ws.playerName || 'unknown'} disconnected`);
-      if (hostConnection) {
-        hostConnection.send(JSON.stringify({
-          type: 'player_disconnected',
-          name: ws.playerName
-        }));
-      }
-    } else {
-      console.log('Client disconnected');
-    }
-  });
 });
 
+// متغيرات لتخزين حالة اللعبة
+let pendingRequests = []; // طلبات القدرات المعلقة
+const HOST_ID = 'your_unique_host_id_123'; // ⚠️ رمز تعريفي خاص بك (المضيف)
+
+io.on('connection', (socket) => {
+    console.log(`مستخدم جديد متصل: ${socket.id}`);
+
+    // التسجيل: يجب على كل متصل أن يحدد هويته (مضيف أو لاعب)
+    socket.on('register', (data) => {
+        if (data.id === HOST_ID) {
+            socket.join('host-room'); // وضع المضيف في غرفة خاصة لتلقي الإشعارات
+            console.log('تم تسجيل المضيف.');
+        } else {
+            socket.join('player-room');
+            console.log(`تم تسجيل اللاعب: ${data.id}`);
+        }
+    });
+
+    // 1. استقبال طلب القدرة من اللاعب
+    socket.on('request_ability', (data) => {
+        const requestId = Date.now();
+        const request = { 
+            requestId: requestId, 
+            playerId: data.playerId, 
+            ability: data.abilityName,
+            status: 'pending'
+        };
+        pendingRequests.push(request);
+
+        // إرسال إشعار فوري إلى المضيف فقط
+        io.to('host-room').emit('new_request', request); 
+        console.log(`طلب قدرة جديد من اللاعب ${data.playerId} - بانتظار المضيف.`);
+    });
+    
+    // 2. استقبال قرار المضيف
+    socket.on('host_decision', (data) => {
+        // البحث عن الطلب وتحديث حالته
+        const requestIndex = pendingRequests.findIndex(r => r.requestId === data.requestId);
+        if (requestIndex !== -1) {
+            // حذف الطلب المعالج
+            pendingRequests.splice(requestIndex, 1);
+
+            // إرسال القرار لجميع اللاعبين
+            io.emit('ability_resolved', {
+                playerId: data.playerId,
+                ability: data.ability,
+                decision: data.decision, // 'accept' أو 'reject'
+                message: `تم ${data.decision === 'accept' ? 'قبول' : 'رفض'} قدرة ${data.ability} للاعب ${data.playerId}`
+            });
+        }
+    });
+
+    socket.on('disconnect', () => {
+        console.log('مستخدم قطع الاتصال');
+    });
+});
+
+// =================================================================
+// تشغيل الخادم (يستخدم منفذ Render)
+// =================================================================
+const PORT = process.env.PORT || 3000;
+
+server.listen(PORT, () => {
+    console.log(`خادم ناروتو يعمل الآن على المنفذ: ${PORT}`);
+});
